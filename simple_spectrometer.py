@@ -2,19 +2,17 @@ import usb.core
 import usb.util
 import struct
 import matplotlib.pyplot as plt
+from collections import namedtuple
 import ocean_optics_configs as config
+
+# definition of global named tuples in use
+Profile = namedtuple('Profile', 'usb_device, device_id, model_name, packet_size, cmd_ep_out, data_ep_in, '
+                                'data_ep_in_size, spectra_ep_in, spectra_ep_in_size')
 
 
 def find_spectrometer():
-    _usb_device = None
-    _device_id = None
-    _model_name = 'unknown'
-    _packet_size = 0
-    _commands_ep_out = 0
-    _data_ep_in = 0
-    _data_ep_in_size = 0
-    _spectra_ep_in = 0
-    _spectra_ep_in_size = 0
+    spectrometer_profile = Profile(usb_device=None, device_id=None, model_name='unknown', packet_size=0,
+                                   cmd_ep_out=0, data_ep_in=0, data_ep_in_size=0, spectra_ep_in=0, spectra_ep_in_size=0)
 
     # find any vendor devices
     usb_devices = usb.core.find(find_all=True, idVendor=config.vendor_ids['OCEANOPTICS_VENDOR'])
@@ -23,29 +21,37 @@ def find_spectrometer():
     if usb_devices is None:
         raise ValueError('No Vendor Spectrometers found')
 
+    # load the Ocean Optics spectrometer configurations
+    ModelConfigs = namedtuple('ModelConfigs', 'device_ids, model_name, packet_size, cmd_epo, data_epi, data_epi_size, '
+                                              'spect_epi, spect_epi_size')
+    spectrometers = list(map(ModelConfigs._make, config.model_configs))
+
     # We've found one or more spectrometers
     for _usb_device in usb_devices:
         print('Product Id: ' + hex(_usb_device.idProduct))
 
-        # find device id in product_ids (we only use the first spectrometer found
-        spectrometer = [item for item in config.product_configs if item[0][0] == _usb_device.idProduct]
+        # find device id in product_configs (we only use the first spectrometer found)
+        spectrometer = [item for item in spectrometers for id in item.device_ids if id == _usb_device.idProduct]
         if spectrometer:
             # load in its configuration
-            _device_id = spectrometer[0][0][0]
-            _model_name = spectrometer[0][1]
-            _packet_size = spectrometer[0][2]
-            _commands_ep_out = spectrometer[0][3]
-            _data_ep_in = spectrometer[0][4]
-            _data_ep_in_size = spectrometer[0][5]
-            _spectra_ep_in = spectrometer[0][6]
-            _spectra_ep_in_size = spectrometer[0][7]
-            print(_model_name, 'found ...')
+            spectrometer_profile = spectrometer_profile._replace(
+                usb_device=_usb_device,
+                device_id=_usb_device.idProduct,
+                model_name=spectrometer[0].model_name,
+                packet_size=spectrometer[0].packet_size,
+                cmd_ep_out=spectrometer[0].cmd_epo,
+                data_ep_in=spectrometer[0].data_epi,
+                data_ep_in_size=spectrometer[0].data_epi_size,
+                spectra_ep_in=spectrometer[0].spect_epi,
+                spectra_ep_in_size=spectrometer[0].spect_epi_size
+            )
+            print(spectrometer_profile.model_name, 'found ...')
 
             # use and set USB configuration for first spectrometer found
             _usb_device.set_configuration()
+            break
 
-    return _usb_device, _device_id, _model_name, _packet_size, _commands_ep_out, \
-        _data_ep_in, _data_ep_in_size, _spectra_ep_in, _spectra_ep_in_size
+    return spectrometer_profile
 
 
 def drop_spectrometer(usb_device):
@@ -188,25 +194,25 @@ def get_spectrometer_info(usb_device, spec_commands_to, spec_data_from):
 
 
 if __name__ == '__main__':
-    usbDevice, spectrometer_id, model_name, spectra_packet_size, cmds_ep_out, data_ep_in, data_ep_in_size, \
-        spectra_ep_in, spectra_ep_in_size = find_spectrometer()
 
-    if usbDevice is None:
+    sp = find_spectrometer()
+
+    if sp.usb_device is None:
         print('No Ocean Optics Devices Found')
-    elif spectrometer_id is None:
+    elif sp.device_id is None:
         print('No Known Ocean Optics Spectrometer Found')
     else:
-        spectrometer_init(usbDevice, cmds_ep_out)
-        get_spectrometer_info(usbDevice, cmds_ep_out, data_ep_in)
-        set_integration_time(usbDevice, 1000000, cmds_ep_out)           # integration time in micro-seconds
-        get_integration_time(usbDevice, cmds_ep_out, data_ep_in)
+        spectrometer_init(sp.usb_device, sp.cmd_ep_out)
+        get_spectrometer_info(sp.usb_device, sp.cmd_ep_out, sp.data_ep_in)
+        set_integration_time(sp.usb_device, 1000000, sp.cmd_ep_out)           # integration time in micro-seconds
+        get_integration_time(sp.usb_device, sp.cmd_ep_out, sp.data_ep_in)
 
         # plot the acquired spectrum
         plt.ion()
         try:
             while True:
-                acquired = request_spectrum(usbDevice, spectra_packet_size, spectra_ep_in, cmds_ep_out)
-                plt.title(model_name)
+                acquired = request_spectrum(sp.usb_device, sp.packet_size, sp.spectra_ep_in, sp.cmd_ep_out)
+                plt.title(sp.model_name)
                 plt.plot(acquired)
                 plt.pause(0.5)
                 plt.cla()
@@ -215,4 +221,4 @@ if __name__ == '__main__':
             pass
 
         print("exiting and cleaning up USB comms ...")
-        drop_spectrometer(usbDevice)
+        drop_spectrometer(sp.usb_device)
